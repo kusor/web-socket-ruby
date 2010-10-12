@@ -62,9 +62,11 @@ class WebSocket
         @path = (uri.path.empty? ? "/" : uri.path) + (uri.query ? "?" + uri.query : "")
         host = uri.host + (uri.port == default_port ? "" : ":#{uri.port}")
         origin = params[:origin] || "http://#{uri.host}"
-        key1 = generate_key()
-        key2 = generate_key()
-        key3 = generate_key3()
+        unless params[:seventy_five]
+          key1 = generate_key()
+          key2 = generate_key()
+          key3 = generate_key3()
+        end
 
         socket = TCPSocket.new(uri.host, uri.port || default_port)
 
@@ -74,30 +76,49 @@ class WebSocket
           @socket = ssl_handshake(socket)
         end
 
-        write(
-          "GET #{@path} HTTP/1.1\r\n" +
-          "Upgrade: WebSocket\r\n" +
-          "Connection: Upgrade\r\n" +
-          "Host: #{host}\r\n" +
-          "Origin: #{origin}\r\n" +
-          "Sec-WebSocket-Key1: #{key1}\r\n" +
-          "Sec-WebSocket-Key2: #{key2}\r\n" +
-          "\r\n" +
-          "#{key3}")
+        unless params[:seventy_five]
+          write(
+            "GET #{@path} HTTP/1.1\r\n" +
+            "Upgrade: WebSocket\r\n" +
+            "Connection: Upgrade\r\n" +
+            "Host: #{host}\r\n" +
+            "Origin: #{origin}\r\n" +
+            "Sec-WebSocket-Key1: #{key1}\r\n" +
+            "Sec-WebSocket-Key2: #{key2}\r\n" +
+            "\r\n" +
+            "#{key3}")
+        else
+          write(
+            "GET #{@path} HTTP/1.1\r\n" +
+            "Upgrade: WebSocket\r\n" +
+            "Connection: Upgrade\r\n" +
+            "Host: #{host}\r\n" +
+            "Origin: #{origin}\r\n" +
+            "\r\n")
+        end
+
         flush()
 
         line = gets().chomp()
         raise(WebSocket::Error, "bad response: #{line}") if !(line =~ /\AHTTP\/1.1 101 /n)
         read_header()
-        if (@header["sec-websocket-origin"] || "").downcase() != origin.downcase()
-          raise(WebSocket::Error,
-            "origin doesn't match: '#{@header["sec-websocket-origin"]}' != '#{origin}'")
-        end
-        reply_digest = read(16)
-        expected_digest = security_digest(key1, key2, key3)
-        if reply_digest != expected_digest
-          raise(WebSocket::Error,
-            "security digest doesn't match: %p != %p" % [reply_digest, expected_digest])
+
+        unless params[:seventy_five]
+          if (@header["sec-websocket-origin"] || "").downcase() != origin.downcase()
+            raise(WebSocket::Error,
+              "origin doesn't match: '#{@header["sec-websocket-origin"]}' != '#{origin}'")
+          end
+          reply_digest = read(16)
+          expected_digest = security_digest(key1, key2, key3)
+          if reply_digest != expected_digest
+            raise(WebSocket::Error,
+              "security digest doesn't match: %p != %p" % [reply_digest, expected_digest])
+          end
+        else
+          if (@header["websocket-origin"] || "").downcase() != origin.downcase()
+            raise(WebSocket::Error,
+              "origin doesn't match: '#{@header["websocket-origin"]}' != '#{origin}'")
+          end
         end
         @handshaked = true
 
@@ -181,7 +202,7 @@ class WebSocket
     def location
       return "ws://#{self.host}#{@path}"
     end
-    
+
     # Does closing handshake.
     def close()
       return if @closing_started
@@ -189,7 +210,7 @@ class WebSocket
       @socket.close() if !@server
       @closing_started = true
     end
-    
+
     def close_socket()
       @socket.close()
     end
@@ -388,6 +409,9 @@ end
 
 
 if __FILE__ == $0
+
+  WebSocket.debug = true if $DEBUG
+
   Thread.abort_on_exception = true
 
   if ARGV[0] == "server" && ARGV.size == 3
@@ -412,9 +436,12 @@ if __FILE__ == $0
       puts("Connection closed")
     end
 
-  elsif ARGV[0] == "client" && ARGV.size == 2
-
-    client = WebSocket.new(ARGV[1])
+  elsif ARGV[0] == "client" && (ARGV.size == 2 || ARGV.size == 3)
+    if ARGV.size == 3 && ARGV[2] == "75"
+      client = WebSocket.new(ARGV[1], {:seventy_five => true})
+    else
+      client = WebSocket.new(ARGV[1])
+    end
     puts("Connected")
     Thread.new() do
       while data = client.receive()
